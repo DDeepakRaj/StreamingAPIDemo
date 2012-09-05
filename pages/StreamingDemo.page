@@ -1,0 +1,307 @@
+<apex:page showHeader="false" docType="html-5.0" standardStylesheets="false">
+    <html>
+        <head>
+            <title>Streaming API Demo</title>
+            <apex:stylesheet value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jquery.mobile-1.1.1.min.css')}"/>
+            <apex:stylesheet value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jquery.jqplot.css')}"/>
+            <apex:includeScript value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jquery-1.7.1.min.js')}"/>
+            <apex:includeScript value="{!$Resource.cometd}" />
+            <apex:includeScript value="{!$Resource.jquery_cometd}" />
+            <script type="text/javascript">
+                var __sfdcSessionId = '{!GETSESSIONID()}';
+            </script>
+            <script src="../../soap/ajax/25.0/connection.js" type="text/javascript"></script>
+            <script type="text/javascript">
+                // dataArray will be used to draw chart
+                var dataArray = [
+                    ['North', 0],
+                    ['South', 0],
+                    ['East', 0],
+                    ['West', 0]
+                ];
+                var chart1; // variable to hold the chart
+                
+                // On document reday, load chart data and list of accounts
+                // Plot the chart, and connect to CometD endpoint and subscribe the channel
+                $(document).ready(function () {
+                    getOppAmountByRegion();
+                    getAccountList();
+
+                    chart1 = $.jqplot('chartdiv', [dataArray], {
+                        title: { text: 'Opportunity Amount by Regions', // title for the plot,
+                                 show: true },
+                        seriesDefaults: {
+                            renderer: jQuery.jqplot.PieRenderer,// Make this a pie chart.
+                            rendererOptions: { showDataLabels: true}
+                        },
+                        legend: { show: true, location: 'e'} // show legends on east side 
+                    });
+
+                    // Connect to the CometD endpoint
+                    $.cometd.init({
+                        url: window.location.protocol + '//' + window.location.hostname + '/cometd/24.0/',
+                        requestHeaders: {
+                            Authorization: 'OAuth {!$Api.Session_ID}'
+                        }
+                    });
+                    
+                    // Subscribe to a topic. JSON-encoded update will be returned in the callback
+                    $.cometd.subscribe('/topic/OpportunityUpdates', function (message) {
+
+                        // update the chart data and replot the chart
+                        if (message.data.event.type == "created") {
+                            addNewOppAmount(message.data.sobject.Region__c, message.data.sobject.Amount);
+                            chart1.series[0].data = dataArray;
+                            chart1.replot();
+                        }
+                        updateOpportunityDetails(message.data.sobject);
+                    });
+                });
+                
+                // When page which holds the chart is shown, replot the chart 
+                $('#Main').live('pageshow', function (event) {
+                    if (chart1 != null) {
+                        chart1.series[0].data = dataArray;
+                        chart1.replot();
+                    }
+                });
+                
+                // Make an AJAX call to get the account's details, on before page change
+                $(document).on('pagebeforechange', function (event, data) {
+                    if ((typeof data.toPage) == 'string' && data.toPage.indexOf('#AccountDetails') > 0) {
+                        var newAccountId = data.toPage.substr(data.toPage.lastIndexOf('?id=') + 4);
+                        getAccountDetailsById(newAccountId);
+                    }
+                });
+
+                // Get all Opportunity amount by region, used to plot the chart
+                function getOppAmountByRegion() {
+                    //function contains all code to execute after page is rendered 
+                    var state = { //state that you need when the callback is called 
+                        output: $("#output"),
+                        startTime: new Date().getTime()
+                    };
+
+                    var callback = {
+                        //call layoutResult if the request is successful 
+                        onSuccess: updateChartData,
+                        //call queryFailed if the api request fails 
+                        onFailure: queryFailed,
+                        source: state
+                    };
+                    // run query over ajax
+                    sforce.connection.query("SELECT Region__c, Count(Id) TotalOpportunities, SUM(Amount) TotalAmount FROM Opportunity GROUP BY Region__c",
+                    callback);
+                };
+                
+                // Get all the accounts to show
+                function getAccountList() {
+                    var state = { //state that you need when the callback is called 
+                        output: document.getElementById("output"),
+                        startTime: new Date().getTime()
+                    };
+
+                    var callback = {
+                        onSuccess: updateAccountList,
+                        onFailure: queryFailed,
+                        source: state
+                    };
+
+                    sforce.connection.query("SELECT Id, Name FROM Account ORDER BY Name", callback);
+                };
+
+
+                function UpdateData(region, amount) {
+                    var isUpdated = false;
+                    for (var i = 0, len = dataArray.length; i < len; i++) {
+                        if (dataArray[i][0] == region) {
+                            dataArray[i][1] = parseFloat(amount);
+                            isUpdated = true;
+                            break;
+                        }
+                    }
+                    if (!isUpdated) dataArray.push([region, amount]);;
+                };
+
+                function addNewOppAmount(region, amount) {
+                    for (var i = 0, len = dataArray.length; i < len; i++) {
+                        if (dataArray[i][0] == region) {
+                            dataArray[i][1] += parseFloat(amount);
+                            break;
+                        }
+                    }
+                };
+                function updateAccountList(queryResult, source) {
+                    if (queryResult.size > 0) {
+                        var accounts = queryResult.getArray('records');
+                        for (var i = 0; i < accounts.length; i++) {
+                            //updateAccountData(accounts[i].Id, accounts[i].Name);
+                            $('#accountList').append(
+                                "<li><a href='#AccountDetails?id=" + accounts[i].Id + "' data-transition='slide'>" + accounts[i].Name +"</a></li>"
+                            );
+                        }
+                    }
+                };
+                
+                function updateChartData(queryResult, source) {
+                    if (queryResult.size > 0) {
+                        var regions = queryResult.getArray('records');
+                        for (var i = 0; i < regions.length; i++) {
+                            UpdateData(regions[i].Region__c, regions[i].TotalAmount);
+                        }
+                        chart1.series[0].data = dataArray;
+                        chart1.replot();
+                    }
+                };
+
+                function getAccountDetailsById(accId) {
+                    var state = { 
+                        output: document.getElementById("output"),
+                        startTime: new Date().getTime()
+                    };
+
+                    var callback = {
+                        onSuccess: updateAcountDetails,
+                        onFailure: queryFailed,
+                        source: state
+                    };
+
+                    sforce.connection.query("Select Id, Name,AccountNumber, Phone, Website, Industry, (SELECT Id, AccountId, Name, StageName, Amount,ExpectedRevenue FROM Account.Opportunities)  FROM Account WHERE Id = '" + accId + "'",
+                    callback);
+                };
+
+                function queryFailed(error, source) {
+                    source.output.innerHTML = "An error has occurred: " + error;
+                };
+
+                function updateAcountDetails(queryResult, source) {
+                    if (queryResult.size > 0) {
+                        var output = "";
+                        //get the records array 
+                        var account = queryResult.getArray('records')[0];
+                        output += account.Id + " " + account.Name + " [Industry - " + account.Industry + "]<br>";
+
+                        $('#accountName').html(account.Name);
+                        $('#AccountId').val(account.Id);
+                        $('#accountNumber').html('Account Number: ' + account.AccountNumber);
+                        $('#phone').html('Phone: ' + account.Phone);
+                        $('#website').html('Website: <a href="' + account.Website + '">' + account.Website + '</a>');
+
+                        // remove all opportunity for last viewed account 
+                        $('.opportunityRow').remove();
+                        if (account.Opportunities != null) {
+                            // loop through data to add opportunities
+                            var opps = account.Opportunities.getArray('records');
+                            for (var i = 0; i < opps.length; i++) {
+                                updateOpportunityDetails(opps[i]);
+                            }
+                        }
+                    }
+                };
+                
+                function updateOpportunityDetails(obj) {
+                    if (obj.AccountId == $('#AccountId').val()) {
+                        if (document.getElementById(obj.Id) == null) { // New  opportunity created for currently displayed Account
+                            var tbody = document.getElementById('oppTable').getElementsByTagName("tbody")[0];
+                            $('#oppTable > tbody:last').append(
+                            "<tr id='" + obj.Id +"' class='opportunityRow' ><td id='" + obj.Id +"_Name' >"
+                            + obj.Name + "</td><td id='" + obj.Id +"_StageName'>" + obj.StageName 
+                            + "</td><td id='" + obj.Id + "_Amount' >" + parseFloat(obj.Amount) +"</td><td id='" 
+                            + obj.Id + "_ExpectedRevenue'>" + parseFloat(obj.ExpectedRevenue) +"</td></tr>"
+                            );
+                            
+                        } else { // Data of opportunity has been changed
+                            if($('#' + obj.Id + '_Name').html() != obj.Name)
+                            {
+                                $('#' + obj.Id + '_Name').html(obj.Name);
+                                // adding a simple flashing effect on changed data
+                                $('#' + obj.Id + '_Name').fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500);
+                            }
+                            if($('#' + obj.Id + '_StageName').html() != obj.StageName)
+                            {
+                                $('#' + obj.Id + '_StageName').html(obj.StageName);
+                                $('#' + obj.Id + '_StageName').fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500);
+                            }
+                            if( parseFloat($('#' + obj.Id + '_Amount').html()) != parseFloat(obj.Amount))
+                            {
+                                $('#' + obj.Id + '_Amount').html(obj.Amount);
+                                $('#' + obj.Id + '_Amount').fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500);
+                            }
+                            if(parseFloat($('#' + obj.Id + '_ExpectedRevenue').html()) != parseFloat(obj.ExpectedRevenue))
+                            {
+                                $('#' + obj.Id + '_ExpectedRevenue').html(obj.ExpectedRevenue);
+                                $('#' + obj.Id + '_ExpectedRevenue').fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500).fadeOut(500).fadeIn(500);
+                            }
+                        }
+                    } else { // Account of thid opportunity is changed, remove it from this account
+                        element = $('#' + obj.Id);
+                        element.parentNode.removeChild(element);
+                    }
+                };
+            </script>
+            <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+        </head>
+        <body>
+            <!--  First Page, showing chart -->
+            <div id="Main" data-role="page" data-theme="b">
+                <div data-role="header" data-theme="b">
+                    <a data-role="button" data-transition="slide" href="#Accounts" data-icon="forward"
+                    data-iconpos="right" class="ui-btn-right">
+                        Accounts
+                    </a>
+                    <h1>Regions</h1>
+                </div><!-- /header -->
+                <div id="chartdiv" class="jqplot-target"></div>
+            </div><!-- /page -->
+            
+            <!--  Second Page, List of accounts -->
+            <div id="Accounts" data-role="page" data-theme="b" data-title="Accounts" >
+                <div data-role="header" data-theme="b">
+                    <a data-role="button" data-rel="back" href="#Main" data-icon="back" data-iconpos="left"
+                    class="ui-btn-left">
+                        Back
+                    </a>
+                    <h3>All Accounts</h3>
+                </div>
+                <ul id="accountList" data-role="listview" data-inset="true" data-filter="false">
+                </ul>
+            </div><!-- /page -->
+            
+            <!--  Last Page, shows the details and Opportunities of Account -->
+            <div id="AccountDetails" data-role="page" data-theme="b" data-title="Account"
+            data-transition="slidedown">
+                <div data-role="header" data-theme="b">
+                    <a data-role="button" data-rel="back" href="#Accounts" data-icon="back"
+                    data-iconpos="left" class="ui-btn-left">
+                        Back
+                    </a>
+                    <h1 id="accountName"></h1>
+                </div><!-- /header -->
+                <div id="accountDetailData" data-role="content">
+                    <input id="AccountId" type="hidden"></input>
+                    <div id="accountNumber"></div>
+                    <div id="phone"></div>
+                    <div id="website"></div>
+                    <div>
+                        <table id='oppTable'>
+                            <thead>
+                                <th>Opportunity Name</th>
+                                <th>Stage</th>
+                                <th>Amount</th>
+                                <th>Expected Revenue</th>
+                            </thead>
+                            <tbody>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="output"></div>
+                </div><!-- /content -->
+            </div><!-- /page -->
+            
+            <apex:includeScript value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jquery.mobile-1.1.1.min.js')}"/>
+            <apex:includeScript value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jquery.jqplot.min.js')}"/>
+            <apex:includeScript value="{!URLFOR($Resource.jQueryMobile, 'jQueryMobile/jqplot.pieRenderer.min.js')}"/>
+        </body>
+    </html>
+</apex:page>
